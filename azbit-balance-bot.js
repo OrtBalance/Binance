@@ -2,34 +2,37 @@ const https = require('https');
 const crypto = require('crypto');
 
 // --- Configure your Azbit API credentials here ---
-const API_KEY = 'k0sfFpgvHMzlm8hCQ6yUHv4OM0SbriaBYVyuww';
-const API_SECRET = 'YuxXWDfiwgJeXs9XISB0eLLE9GPBskdmGpVTF3JaPrdUv8aP4f5-cfUeU06x2M6hD3bpNA';
+// Or set AZBIT_API_KEY / AZBIT_API_SECRET environment variables.
+const API_KEY = (process.env.AZBIT_API_KEY || 'k0sfFpgvHMzlm8hCQ6yUHv4OM0SbriaBYVyuww').trim();
+const API_SECRET = (process.env.AZBIT_API_SECRET || 'YuxXWDfiwgJeXs9XISB0eLLE9GPBskdmGpVTF3JaPrdUv8aP4f5-cfUeU06x2M6hD3bpNA').trim();
 
 // Check interval in ms (60000 = 1 minute). Set to 0 for a single check.
 const CHECK_INTERVAL_MS = 0;
 
 const API_HOST = 'data.azbit.com';
 const API_BASE = 'https://data.azbit.com/api';
-const BALANCES_PATH = '/wallets/balances';
-const REQUEST_URL = `${API_BASE}${BALANCES_PATH}`;
+const ENDPOINT = 'wallets/balances';
+const REQUEST_URL = `${API_BASE}/${ENDPOINT}`;
 
-function sign(requestUrl, requestBodyString = '') {
-  const signatureText = API_KEY + requestUrl + requestBodyString;
+function signRequest(params = {}) {
+  // Azbit signed GET requests use JSON.stringify(params); empty params -> "[]"
+  const requestBodyString = JSON.stringify(params);
+  const signatureText = API_KEY + REQUEST_URL + requestBodyString;
   return crypto.createHmac('sha256', API_SECRET).update(signatureText).digest('hex');
 }
 
-function getBalances() {
+function apiRequest(path, params = {}) {
   return new Promise((resolve, reject) => {
-    const requestBodyString = '';
-    const signature = sign(REQUEST_URL, requestBodyString);
+    const signature = signRequest(params);
 
     const req = https.request(
       {
         hostname: API_HOST,
-        path: `/api${BALANCES_PATH}`,
+        path,
         method: 'GET',
         headers: {
           Accept: 'application/json',
+          'Content-Type': 'application/json',
           'API-PublicKey': API_KEY,
           'API-Signature': signature,
         },
@@ -48,7 +51,6 @@ function getBalances() {
           try {
             json = JSON.parse(trimmed);
           } catch {
-            // Azbit often returns plain-text errors, e.g. "401 Unauthorized - Unknown API-PublicKey"
             reject(new Error(trimmed));
             return;
           }
@@ -57,8 +59,6 @@ function getBalances() {
             const message =
               json.message || json.error || json.title || JSON.stringify(json);
             reject(new Error(`${message} (HTTP ${res.statusCode})`));
-          } else if (!json.balances && !json.balancesBlockedInOrder) {
-            reject(new Error(json.message || json.error || 'Unexpected response format'));
           } else {
             resolve(json);
           }
@@ -69,6 +69,11 @@ function getBalances() {
     req.on('error', reject);
     req.end();
   });
+}
+
+function getBalances() {
+  // Match the reference Azbit client request path (trailing "?" with no query params).
+  return apiRequest(`/api/${ENDPOINT}?`, {});
 }
 
 function formatBalance(value) {
@@ -165,10 +170,12 @@ async function printInvalidKeyHelp() {
   const ip = await getPublicIp();
   console.error('\nFix checklist:');
   console.error(`  1. API host: ${API_HOST}`);
-  console.error('  2. Permissions: enable read-only access on the API key');
-  console.error(`  3. IP whitelist: if restricted, add this IP -> ${ip}`);
-  console.error('  4. Key source: create keys at azbit.com -> Settings -> API Keys');
-  console.error('  5. Secret: re-copy the secret (shown only once when the key was created)');
+  console.error(`  2. Public key loaded: ${API_KEY.slice(0, 4)}...${API_KEY.slice(-4)} (${API_KEY.length} chars)`);
+  console.error('  3. Permissions: enable read-only access on the API key');
+  console.error(`  4. IP whitelist: if restricted, add this IP -> ${ip}`);
+  console.error('  5. Key source: create keys at azbit.com -> Settings -> API Keys');
+  console.error('  6. Secret: re-copy the secret (shown only once when the key was created)');
+  console.error('  7. If the key was exposed (e.g. on GitHub), delete it and create a new one');
 }
 
 async function checkBalance() {
@@ -179,18 +186,16 @@ async function checkBalance() {
     console.error('\nBalance check failed:', error.message);
 
     const msg = error.message.toLowerCase();
-    if (
-      msg.includes('unknown api-publickey') ||
-      msg.includes('invalid') && (msg.includes('key') || msg.includes('api'))
-    ) {
+    if (msg.includes('unknown api-publickey')) {
       console.error('Azbit does not recognize this API public key.');
+      console.error('Create a new API key on Azbit and paste the full public key + secret.');
       await printInvalidKeyHelp();
-    } else if (
-      msg.includes('signature') ||
-      msg.includes('unauthorized') ||
-      msg.includes('401')
-    ) {
-      console.error('Authentication failed. Re-check your API key and secret in Azbit API Management.');
+    } else if (msg.includes('signature')) {
+      console.error('The API secret is wrong, or the signature format does not match.');
+      console.error('Re-copy the secret from Azbit API Management.');
+      await printInvalidKeyHelp();
+    } else if (msg.includes('unauthorized') || msg.includes('401')) {
+      console.error('Authentication failed. Re-check your API key and secret.');
       await printInvalidKeyHelp();
     } else if (msg.includes('ip')) {
       const ip = await getPublicIp();
@@ -206,7 +211,7 @@ function main() {
     API_KEY.includes('your_api_key') ||
     API_SECRET.includes('your_api_secret')
   ) {
-    console.error('Set your AZBIT API_KEY and API_SECRET at the top of this file.');
+    console.error('Set AZBIT_API_KEY and AZBIT_API_SECRET, or edit the constants at the top of this file.');
     process.exit(1);
   }
 
