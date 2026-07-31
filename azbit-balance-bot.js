@@ -3,11 +3,17 @@ const crypto = require('crypto');
 
 // --- Configure your Azbit API credentials here ---
 // Or set AZBIT_API_KEY / AZBIT_API_SECRET environment variables.
+
 const API_KEY = (process.env.AZBIT_API_KEY || 'snQOVapj46dw4c7AjhJGRA4dAkWyuKkFXM41Ig').trim();
 const API_SECRET = (process.env.AZBIT_API_SECRET || 'sPuwXjceF6TQTZqQFyzJ6mLkuwtslvHOvMTiqHaauSPFj0xYa2dRBt1Ne06j3gvW0h7fYg').trim();
 
 // Check interval in ms (60000 = 1 minute). Set to 0 for a single check.
 const CHECK_INTERVAL_MS = 0;
+
+// Retry transient network failures (ECONNRESET, timeouts, etc.).
+const REQUEST_TIMEOUT_MS = 30000;
+const MAX_RETRIES = 3;
+const RETRY_DELAY_MS = 2000;
 
 const API_HOST = 'data.azbit.com';
 const API_BASE = 'https://data.azbit.com/api';
@@ -21,7 +27,23 @@ function signRequest(params = {}) {
   return crypto.createHmac('sha256', API_SECRET).update(signatureText).digest('hex');
 }
 
-function apiRequest(path, params = {}) {
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableNetworkError(error) {
+  const msg = (error && error.message ? error.message : String(error)).toLowerCase();
+  return (
+    msg.includes('econnreset') ||
+    msg.includes('etimedout') ||
+    msg.includes('econnrefused') ||
+    msg.includes('socket hang up') ||
+    msg.includes('network') ||
+    msg.includes('timeout')
+  );
+}
+
+function apiRequestOnce(path, params = {}) {
   return new Promise((resolve, reject) => {
     const signature = signRequest(params);
 
@@ -30,9 +52,12 @@ function apiRequest(path, params = {}) {
         hostname: API_HOST,
         path,
         method: 'GET',
+        family: 4,
         headers: {
+          'User-Agent': 'azbit-balance-bot/1.0',
           Accept: 'application/json',
           'Content-Type': 'application/json',
+          Connection: 'close',
           'API-PublicKey': API_KEY,
           'API-Signature': signature,
         },
@@ -40,6 +65,7 @@ function apiRequest(path, params = {}) {
       (res) => {
         let data = '';
         res.on('data', (chunk) => (data += chunk));
+        res.on('error', reject);
         res.on('end', () => {
           const trimmed = data.trim();
           if (!trimmed) {
@@ -66,9 +92,34 @@ function apiRequest(path, params = {}) {
       }
     );
 
+    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
+      req.destroy(new Error(`Request timed out after ${REQUEST_TIMEOUT_MS / 1000}s`));
+    });
+
     req.on('error', reject);
     req.end();
   });
+}
+
+async function apiRequest(path, params = {}) {
+  let lastError;
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      return await apiRequestOnce(path, params);
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableNetworkError(error) || attempt === MAX_RETRIES) {
+        throw error;
+      }
+      console.warn(
+        `Network error (attempt ${attempt}/${MAX_RETRIES}): ${error.message}. Retrying in ${RETRY_DELAY_MS / 1000}s...`
+      );
+      await sleep(RETRY_DELAY_MS * attempt);
+    }
+  }
+
+  throw lastError;
 }
 
 function getBalances() {
@@ -200,6 +251,16 @@ async function checkBalance() {
     } else if (msg.includes('ip')) {
       const ip = await getPublicIp();
       console.error(`Your IP (${ip}) may not be whitelisted on this API key.`);
+    } else if (isRetryableNetworkError(error)) {
+      const ip = await getPublicIp();
+      console.error('\nNetwork connection to Azbit was interrupted (ECONNRESET).');
+      console.error('Try these fixes:');
+      console.error('  1. Run again — the bot now retries automatically');
+      console.error('  2. Test reachability: curl https://data.azbit.com/api/currencies');
+      console.error('  3. Disable VPN/proxy temporarily');
+      console.error('  4. Check firewall/antivirus is not blocking Node.js');
+      console.error(`  5. Whitelist your IP on Azbit if enabled -> ${ip}`);
+      console.error('  6. Try another network (mobile hotspot) if your ISP blocks the API');
     }
   }
 }
