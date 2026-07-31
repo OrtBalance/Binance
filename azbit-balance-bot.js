@@ -38,19 +38,29 @@ function getBalances() {
         let data = '';
         res.on('data', (chunk) => (data += chunk));
         res.on('end', () => {
+          const trimmed = data.trim();
+          if (!trimmed) {
+            reject(new Error(`Empty response from Azbit (HTTP ${res.statusCode})`));
+            return;
+          }
+
+          let json;
           try {
-            const json = JSON.parse(data);
-            if (res.statusCode !== 200) {
-              const message =
-                json.message || json.error || json.title || JSON.stringify(json);
-              reject(new Error(`${message} (HTTP ${res.statusCode})`));
-            } else if (!json.balances && !json.balancesBlockedInOrder) {
-              reject(new Error(json.message || json.error || 'Unexpected response format'));
-            } else {
-              resolve(json);
-            }
-          } catch (err) {
-            reject(err);
+            json = JSON.parse(trimmed);
+          } catch {
+            // Azbit often returns plain-text errors, e.g. "401 Unauthorized - Unknown API-PublicKey"
+            reject(new Error(trimmed));
+            return;
+          }
+
+          if (res.statusCode !== 200) {
+            const message =
+              json.message || json.error || json.title || JSON.stringify(json);
+            reject(new Error(`${message} (HTTP ${res.statusCode})`));
+          } else if (!json.balances && !json.balancesBlockedInOrder) {
+            reject(new Error(json.message || json.error || 'Unexpected response format'));
+          } else {
+            resolve(json);
           }
         });
       }
@@ -169,10 +179,18 @@ async function checkBalance() {
     console.error('\nBalance check failed:', error.message);
 
     const msg = error.message.toLowerCase();
-    if (msg.includes('invalid') && (msg.includes('key') || msg.includes('api'))) {
+    if (
+      msg.includes('unknown api-publickey') ||
+      msg.includes('invalid') && (msg.includes('key') || msg.includes('api'))
+    ) {
+      console.error('Azbit does not recognize this API public key.');
       await printInvalidKeyHelp();
-    } else if (msg.includes('signature') || msg.includes('unauthorized') || msg.includes('401')) {
-      console.error('The API secret may be wrong. Re-copy it from Azbit API Management.');
+    } else if (
+      msg.includes('signature') ||
+      msg.includes('unauthorized') ||
+      msg.includes('401')
+    ) {
+      console.error('Authentication failed. Re-check your API key and secret in Azbit API Management.');
       await printInvalidKeyHelp();
     } else if (msg.includes('ip')) {
       const ip = await getPublicIp();
