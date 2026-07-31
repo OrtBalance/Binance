@@ -3,8 +3,8 @@ const crypto = require('crypto');
 
 // --- Configure your Azbit API credentials here ---
 // Or set AZBIT_API_KEY / AZBIT_API_SECRET environment variables.
-const API_KEY = (process.env.AZBIT_API_KEY || 'k0sfFpgvHMzlm8hCQ6yUHv4OM0SbriaBYVyuww').trim();
-const API_SECRET = (process.env.AZBIT_API_SECRET || 'YuxXWDfiwgJeXs9XISB0eLLE9GPBskdmGpVTF3JaPrdUv8aP4f5-cfUeU06x2M6hD3bpNA').trim();
+const API_KEY = (process.env.AZBIT_API_KEY || 'snQOVapj46dw4c7AjhJGRA4dAkWyuKkFXM41Ig').trim();
+const API_SECRET = (process.env.AZBIT_API_SECRET || 'sPuwXjceF6TQTZqQFyzJ6mLkuwtslvHOvMTiqHaauSPFj0xYa2dRBt1Ne06j3gvW0h7fYg').trim();
 
 // Check interval in ms (60000 = 1 minute). Set to 0 for a single check.
 const CHECK_INTERVAL_MS = 0;
