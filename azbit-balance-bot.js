@@ -1,130 +1,57 @@
 const https = require('https');
 const crypto = require('crypto');
 
-// --- Configure your Azbit API credentials here ---
-// Or set AZBIT_API_KEY / AZBIT_API_SECRET environment variables.
+// --- Configure your Binance API credentials here ---
+const API_KEY = '748e93e7fac9de7098c0e4cb63d44a855d7b7cf804a240fe0ed4daff772c06f3';
+const API_SECRET = 'faf8fc2f2398a0d56aa50b31c225faf53f1798c0393f8cf6e9d5e68b9e706a51';
 
-const API_KEY = (process.env.AZBIT_API_KEY || 'snQOVapj46dw4c7AjhJGRA4dAkWyuKkFXM41Ig').trim();
-const API_SECRET = (process.env.AZBIT_API_SECRET || 'sPuwXjceF6TQTZqQFyzJ6mLkuwtslvHOvMTiqHaauSPFj0xYa2dRBt1Ne06j3gvW0h7fYg').trim();
+// false = mainnet (real Binance), true = testnet (testnet.binance.vision keys)
+const USE_TESTNET = false;
 
 // Check interval in ms (60000 = 1 minute). Set to 0 for a single check.
 const CHECK_INTERVAL_MS = 0;
 
-// Retry transient network failures (ECONNRESET, timeouts, etc.).
-const REQUEST_TIMEOUT_MS = 30000;
-const MAX_RETRIES = 3;
-const RETRY_DELAY_MS = 2000;
+const API_HOST = USE_TESTNET ? 'testnet.binance.vision' : 'api.binance.com';
 
-const API_HOST = 'data.azbit.com';
-const API_BASE = 'https://data.azbit.com/api';
-const ENDPOINT = 'wallets/balances';
-const REQUEST_URL = `${API_BASE}/${ENDPOINT}`;
-
-function signRequest(params = {}) {
-  // Azbit signed GET requests use JSON.stringify(params); empty params -> "[]"
-  const requestBodyString = JSON.stringify(params);
-  const signatureText = API_KEY + REQUEST_URL + requestBodyString;
-  return crypto.createHmac('sha256', API_SECRET).update(signatureText).digest('hex');
+function sign(queryString) {
+  return crypto.createHmac('sha256', API_SECRET).update(queryString).digest('hex');
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function isRetryableNetworkError(error) {
-  const msg = (error && error.message ? error.message : String(error)).toLowerCase();
-  return (
-    msg.includes('econnreset') ||
-    msg.includes('etimedout') ||
-    msg.includes('econnrefused') ||
-    msg.includes('socket hang up') ||
-    msg.includes('network') ||
-    msg.includes('timeout')
-  );
-}
-
-function apiRequestOnce(path, params = {}) {
+function getAccount() {
   return new Promise((resolve, reject) => {
-    const signature = signRequest(params);
+    const timestamp = Date.now();
+    const query = `timestamp=${timestamp}&recvWindow=5000`;
+    const signature = sign(query);
+    const path = `/api/v3/account?${query}&signature=${signature}`;
 
     const req = https.request(
       {
         hostname: API_HOST,
         path,
         method: 'GET',
-        family: 4,
-        headers: {
-          'User-Agent': 'azbit-balance-bot/1.0',
-          Accept: 'application/json',
-          'Content-Type': 'application/json',
-          Connection: 'close',
-          'API-PublicKey': API_KEY,
-          'API-Signature': signature,
-        },
+        headers: { 'X-MBX-APIKEY': API_KEY },
       },
       (res) => {
         let data = '';
         res.on('data', (chunk) => (data += chunk));
-        res.on('error', reject);
         res.on('end', () => {
-          const trimmed = data.trim();
-          if (!trimmed) {
-            reject(new Error(`Empty response from Azbit (HTTP ${res.statusCode})`));
-            return;
-          }
-
-          let json;
           try {
-            json = JSON.parse(trimmed);
-          } catch {
-            reject(new Error(trimmed));
-            return;
-          }
-
-          if (res.statusCode !== 200) {
-            const message =
-              json.message || json.error || json.title || JSON.stringify(json);
-            reject(new Error(`${message} (HTTP ${res.statusCode})`));
-          } else {
-            resolve(json);
+            const json = JSON.parse(data);
+            if (res.statusCode !== 200) {
+              reject(new Error(json.msg || `HTTP ${res.statusCode}`));
+            } else {
+              resolve(json);
+            }
+          } catch (err) {
+            reject(err);
           }
         });
       }
     );
 
-    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
-      req.destroy(new Error(`Request timed out after ${REQUEST_TIMEOUT_MS / 1000}s`));
-    });
-
     req.on('error', reject);
     req.end();
   });
-}
-
-async function apiRequest(path, params = {}) {
-  let lastError;
-
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    try {
-      return await apiRequestOnce(path, params);
-    } catch (error) {
-      lastError = error;
-      if (!isRetryableNetworkError(error) || attempt === MAX_RETRIES) {
-        throw error;
-      }
-      console.warn(
-        `Network error (attempt ${attempt}/${MAX_RETRIES}): ${error.message}. Retrying in ${RETRY_DELAY_MS / 1000}s...`
-      );
-      await sleep(RETRY_DELAY_MS * attempt);
-    }
-  }
-
-  throw lastError;
-}
-
-function getBalances() {
-  // Match the reference Azbit client request path (trailing "?" with no query params).
-  return apiRequest(`/api/${ENDPOINT}?`, {});
 }
 
 function formatBalance(value) {
@@ -133,150 +60,94 @@ function formatBalance(value) {
   return num.toLocaleString(undefined, { maximumFractionDigits: 8 });
 }
 
-function mergeBalances(data) {
-  const byCurrency = new Map();
-
-  for (const item of data.balances || []) {
-    byCurrency.set(item.currencyCode, {
-      currency: item.currencyCode,
-      available: Number(item.amount) || 0,
-      locked: 0,
-    });
-  }
-
-  for (const item of data.balancesBlockedInOrder || []) {
-    const existing = byCurrency.get(item.currencyCode) || {
-      currency: item.currencyCode,
-      available: 0,
-      locked: 0,
-    };
-    existing.locked = Number(item.amount) || 0;
-    byCurrency.set(item.currencyCode, existing);
-  }
-
-  return Array.from(byCurrency.values());
-}
-
-function printBalances(data) {
+function printBalances(account) {
   const timestamp = new Date().toLocaleString();
-  const merged = mergeBalances(data);
-  const nonZero = merged.filter((b) => b.available > 0 || b.locked > 0);
+  const nonZero = account.balances.filter(
+    (b) => Number(b.free) > 0 || Number(b.locked) > 0
+  );
 
   console.log('\n' + '='.repeat(60));
-  console.log(`Azbit Balance Check — ${timestamp}`);
+  console.log(`Binance Balance Check — ${timestamp}`);
   console.log('='.repeat(60));
 
   if (nonZero.length === 0) {
     console.log('No assets with balance found.');
-  } else {
+    return;
+  }
+
+  console.log(
+    `${'Asset'.padEnd(12)} ${'Free'.padStart(18)} ${'Locked'.padStart(18)} ${'Total'.padStart(18)}`
+  );
+  console.log('-'.repeat(60));
+
+  for (const { asset, free, locked } of nonZero) {
+    const total = Number(free) + Number(locked);
     console.log(
-      `${'Currency'.padEnd(12)} ${'Available'.padStart(18)} ${'Locked'.padStart(18)} ${'Total'.padStart(18)}`
+      `${asset.padEnd(12)} ${formatBalance(free).padStart(18)} ${formatBalance(locked).padStart(18)} ${formatBalance(total).padStart(18)}`
     );
-    console.log('-'.repeat(60));
-
-    for (const { currency, available, locked } of nonZero) {
-      const total = available + locked;
-      console.log(
-        `${currency.padEnd(12)} ${formatBalance(available).padStart(18)} ${formatBalance(locked).padStart(18)} ${formatBalance(total).padStart(18)}`
-      );
-    }
-
-    console.log('-'.repeat(60));
-    console.log(`Assets with balance: ${nonZero.length}`);
   }
 
-  if (data.totalUsdt != null || data.totalBtc != null) {
-    console.log('-'.repeat(60));
-    if (data.totalUsdt != null) {
-      console.log(`Portfolio total (USDT): ${formatBalance(data.totalUsdt)}`);
-    }
-    if (data.totalBtc != null) {
-      console.log(`Portfolio total (BTC):  ${formatBalance(data.totalBtc)}`);
-    }
-    if (data.totalInOrderUsdt != null && Number(data.totalInOrderUsdt) > 0) {
-      console.log(`In orders (USDT):       ${formatBalance(data.totalInOrderUsdt)}`);
-    }
-  }
+  console.log('-'.repeat(60));
+  console.log(`Assets with balance: ${nonZero.length}`);
+  console.log(`Can trade: ${account.canTrade ? 'Yes' : 'No'}`);
+  console.log(`Can withdraw: ${account.canWithdraw ? 'Yes' : 'No'}`);
+  console.log(`Can deposit: ${account.canDeposit ? 'Yes' : 'No'}`);
 }
 
 function getPublicIp() {
   return new Promise((resolve) => {
-    https
-      .get('https://api.ipify.org?format=json', (res) => {
-        let data = '';
-        res.on('data', (chunk) => (data += chunk));
-        res.on('end', () => {
-          try {
-            resolve(JSON.parse(data).ip);
-          } catch {
-            resolve('unknown');
-          }
-        });
-      })
-      .on('error', () => resolve('unknown'));
+    https.get('https://api.ipify.org?format=json', (res) => {
+      let data = '';
+      res.on('data', (chunk) => (data += chunk));
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(data).ip);
+        } catch {
+          resolve('unknown');
+        }
+      });
+    }).on('error', () => resolve('unknown'));
   });
 }
 
 async function printInvalidKeyHelp() {
   const ip = await getPublicIp();
   console.error('\nFix checklist:');
-  console.error(`  1. API host: ${API_HOST}`);
-  console.error(`  2. Public key loaded: ${API_KEY.slice(0, 4)}...${API_KEY.slice(-4)} (${API_KEY.length} chars)`);
-  console.error('  3. Permissions: enable read-only access on the API key');
-  console.error(`  4. IP whitelist: if restricted, add this IP -> ${ip}`);
-  console.error('  5. Key source: create keys at azbit.com -> Settings -> API Keys');
-  console.error('  6. Secret: re-copy the secret (shown only once when the key was created)');
-  console.error('  7. If the key was exposed (e.g. on GitHub), delete it and create a new one');
+  console.error(`  1. Network: using ${USE_TESTNET ? 'TESTNET' : 'MAINNET'} (${API_HOST})`);
+  console.error('     Mainnet keys -> USE_TESTNET = false');
+  console.error('     Testnet keys -> USE_TESTNET = true');
+  console.error('  2. Permissions: enable "Enable Reading" on the API key');
+  console.error(`  3. IP whitelist: if restricted, add this IP -> ${ip}`);
+  console.error('  4. Key source: create keys at binance.com (mainnet) or testnet.binance.vision (testnet)');
+  console.error('  5. Secret: re-copy the secret (shown only once when the key was created)');
 }
 
 async function checkBalance() {
   try {
-    const data = await getBalances();
-    printBalances(data);
+    const account = await getAccount();
+    printBalances(account);
   } catch (error) {
     console.error('\nBalance check failed:', error.message);
 
-    const msg = error.message.toLowerCase();
-    if (msg.includes('unknown api-publickey')) {
-      console.error('Azbit does not recognize this API public key.');
-      console.error('Create a new API key on Azbit and paste the full public key + secret.');
+    if (error.message.includes('Invalid API-key')) {
       await printInvalidKeyHelp();
-    } else if (msg.includes('signature')) {
-      console.error('The API secret is wrong, or the signature format does not match.');
-      console.error('Re-copy the secret from Azbit API Management.');
-      await printInvalidKeyHelp();
-    } else if (msg.includes('unauthorized') || msg.includes('401')) {
-      console.error('Authentication failed. Re-check your API key and secret.');
-      await printInvalidKeyHelp();
-    } else if (msg.includes('ip')) {
+    } else if (error.message.includes('Signature')) {
+      console.error('The API secret is wrong. Re-copy it from Binance API Management.');
+    } else if (error.message.includes('IP')) {
       const ip = await getPublicIp();
-      console.error(`Your IP (${ip}) may not be whitelisted on this API key.`);
-    } else if (isRetryableNetworkError(error)) {
-      const ip = await getPublicIp();
-      console.error('\nNetwork connection to Azbit was interrupted (ECONNRESET).');
-      console.error('Try these fixes:');
-      console.error('  1. Run again — the bot now retries automatically');
-      console.error('  2. Test reachability: curl https://data.azbit.com/api/currencies');
-      console.error('  3. Disable VPN/proxy temporarily');
-      console.error('  4. Check firewall/antivirus is not blocking Node.js');
-      console.error(`  5. Whitelist your IP on Azbit if enabled -> ${ip}`);
-      console.error('  6. Try another network (mobile hotspot) if your ISP blocks the API');
+      console.error(`Your IP (${ip}) is not whitelisted on this API key.`);
     }
   }
 }
 
 function main() {
-  if (
-    !API_KEY ||
-    !API_SECRET ||
-    API_KEY.includes('your_api_key') ||
-    API_SECRET.includes('your_api_secret')
-  ) {
-    console.error('Set AZBIT_API_KEY and AZBIT_API_SECRET, or edit the constants at the top of this file.');
+  if (!API_KEY || !API_SECRET || API_KEY.includes('your_api_key') || API_SECRET.includes('your_api_secret')) {
+    console.error('Set your BINANCE API_KEY and API_SECRET at the top of this file.');
     process.exit(1);
   }
 
-  console.log('Azbit Balance Bot started.');
+  console.log('Binance Balance Bot started.');
+  console.log(`Network: ${USE_TESTNET ? 'TESTNET' : 'MAINNET'} (${API_HOST})`);
   console.log(`Mode: ${CHECK_INTERVAL_MS <= 0 ? 'single check' : `every ${CHECK_INTERVAL_MS / 1000}s`}`);
 
   checkBalance();
