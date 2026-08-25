@@ -2,8 +2,8 @@ const https = require('https');
 const crypto = require('crypto');
 
 // --- Configure your Binance API credentials here ---
-const API_KEY = 'IPif8LKsk6GAAVeuu66brss1Y7pMdXuWSCLMCh9tMCoojdq84lOV6xgX9dJOiAmx';
-const API_SECRET = 'sc9RZcUwphOT8bobjcX5xUBKY1WCAWHQ60Z74ahFAWnM67SqXv8p499eLDqs7PuJ';
+const API_KEY = 'QQ9j5AjTX8yIs5eRYvO4JLgbjoViaHVGp8oQCqRLZVX0DpdmX1Ka9x2mS3z6q3Yu';
+const API_SECRET = 'Yd8Ige9L42UEhNamcme71WPvKkhu1WF9elknsn4mE06dZ0iR0lBN6P0sNUsOA46c';
 
 // false = mainnet (real Binance), true = testnet (testnet.binance.vision keys)
 const USE_TESTNET = false;
