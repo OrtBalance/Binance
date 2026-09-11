@@ -1,35 +1,37 @@
 const https = require('https');
 const crypto = require('crypto');
 
-// --- Configure your Binance API credentials here ---
-const API_KEY = 'dAPK6Sch2Zs4DcLtNGLWkeY9f0idvhzdymE6LaR1w5VhjX3gnUTNym7Mn98ic0C1';
-const API_SECRET = 'O5oN2ROEN1IXFRKgkCmoQfS8QyjO8YyMswLLTyNfYYcAfr12hgBzITGWAZUh7LSC';
-
-// false = mainnet (real Binance), true = testnet (testnet.binance.vision keys)
-const USE_TESTNET = false;
+// --- Configure your CoinDCX API credentials here ---
+const API_KEY = '3050fc182f00278bb14f742c69408361b11fc7dae61ee26d';
+const API_SECRET = 'c9c3f2458bead1e00838208eea0f36380e9cedcd6ab5472381b69f3fee41f6c6';
 
 // Check interval in ms (60000 = 1 minute). Set to 0 for a single check.
 const CHECK_INTERVAL_MS = 0;
 
-const API_HOST = USE_TESTNET ? 'testnet.binance.vision' : 'api.binance.com';
+const API_HOST = 'api.coindcx.com';
+const BALANCES_PATH = '/exchange/v1/users/balances';
 
-function sign(queryString) {
-  return crypto.createHmac('sha256', API_SECRET).update(queryString).digest('hex');
+function sign(jsonBody) {
+  return crypto.createHmac('sha256', API_SECRET).update(jsonBody).digest('hex');
 }
 
-function getAccount() {
+function getBalances() {
   return new Promise((resolve, reject) => {
-    const timestamp = Date.now();
-    const query = `timestamp=${timestamp}&recvWindow=5000`;
-    const signature = sign(query);
-    const path = `/api/v3/account?${query}&signature=${signature}`;
+    const body = { timestamp: Date.now() };
+    const jsonBody = JSON.stringify(body);
+    const signature = sign(jsonBody);
 
     const req = https.request(
       {
         hostname: API_HOST,
-        path,
-        method: 'GET',
-        headers: { 'X-MBX-APIKEY': API_KEY },
+        path: BALANCES_PATH,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(jsonBody),
+          'X-AUTH-APIKEY': API_KEY,
+          'X-AUTH-SIGNATURE': signature,
+        },
       },
       (res) => {
         let data = '';
@@ -38,7 +40,11 @@ function getAccount() {
           try {
             const json = JSON.parse(data);
             if (res.statusCode !== 200) {
-              reject(new Error(json.msg || `HTTP ${res.statusCode}`));
+              const message =
+                json.message || json.error || json.msg || JSON.stringify(json);
+              reject(new Error(`${message} (HTTP ${res.statusCode})`));
+            } else if (!Array.isArray(json)) {
+              reject(new Error(json.message || json.error || 'Unexpected response format'));
             } else {
               resolve(json);
             }
@@ -50,6 +56,7 @@ function getAccount() {
     );
 
     req.on('error', reject);
+    req.write(jsonBody);
     req.end();
   });
 }
@@ -60,14 +67,14 @@ function formatBalance(value) {
   return num.toLocaleString(undefined, { maximumFractionDigits: 8 });
 }
 
-function printBalances(account) {
+function printBalances(balances) {
   const timestamp = new Date().toLocaleString();
-  const nonZero = account.balances.filter(
-    (b) => Number(b.free) > 0 || Number(b.locked) > 0
+  const nonZero = balances.filter(
+    (b) => Number(b.balance) > 0 || Number(b.locked_balance) > 0
   );
 
   console.log('\n' + '='.repeat(60));
-  console.log(`Binance Balance Check — ${timestamp}`);
+  console.log(`CoinDCX Balance Check — ${timestamp}`);
   console.log('='.repeat(60));
 
   if (nonZero.length === 0) {
@@ -76,78 +83,81 @@ function printBalances(account) {
   }
 
   console.log(
-    `${'Asset'.padEnd(12)} ${'Free'.padStart(18)} ${'Locked'.padStart(18)} ${'Total'.padStart(18)}`
+    `${'Currency'.padEnd(12)} ${'Available'.padStart(18)} ${'Locked'.padStart(18)} ${'Total'.padStart(18)}`
   );
   console.log('-'.repeat(60));
 
-  for (const { asset, free, locked } of nonZero) {
-    const total = Number(free) + Number(locked);
+  for (const { currency, balance, locked_balance } of nonZero) {
+    const total = Number(balance) + Number(locked_balance);
     console.log(
-      `${asset.padEnd(12)} ${formatBalance(free).padStart(18)} ${formatBalance(locked).padStart(18)} ${formatBalance(total).padStart(18)}`
+      `${currency.padEnd(12)} ${formatBalance(balance).padStart(18)} ${formatBalance(locked_balance).padStart(18)} ${formatBalance(total).padStart(18)}`
     );
   }
 
   console.log('-'.repeat(60));
   console.log(`Assets with balance: ${nonZero.length}`);
-  console.log(`Can trade: ${account.canTrade ? 'Yes' : 'No'}`);
-  console.log(`Can withdraw: ${account.canWithdraw ? 'Yes' : 'No'}`);
-  console.log(`Can deposit: ${account.canDeposit ? 'Yes' : 'No'}`);
 }
 
 function getPublicIp() {
   return new Promise((resolve) => {
-    https.get('https://api.ipify.org?format=json', (res) => {
-      let data = '';
-      res.on('data', (chunk) => (data += chunk));
-      res.on('end', () => {
-        try {
-          resolve(JSON.parse(data).ip);
-        } catch {
-          resolve('unknown');
-        }
-      });
-    }).on('error', () => resolve('unknown'));
+    https
+      .get('https://api.ipify.org?format=json', (res) => {
+        let data = '';
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(data).ip);
+          } catch {
+            resolve('unknown');
+          }
+        });
+      })
+      .on('error', () => resolve('unknown'));
   });
 }
 
 async function printInvalidKeyHelp() {
   const ip = await getPublicIp();
   console.error('\nFix checklist:');
-  console.error(`  1. Network: using ${USE_TESTNET ? 'TESTNET' : 'MAINNET'} (${API_HOST})`);
-  console.error('     Mainnet keys -> USE_TESTNET = false');
-  console.error('     Testnet keys -> USE_TESTNET = true');
-  console.error('  2. Permissions: enable "Enable Reading" on the API key');
+  console.error(`  1. API host: ${API_HOST}`);
+  console.error('  2. Permissions: enable balance/read access on the API key');
   console.error(`  3. IP whitelist: if restricted, add this IP -> ${ip}`);
-  console.error('  4. Key source: create keys at binance.com (mainnet) or testnet.binance.vision (testnet)');
+  console.error('  4. Key source: create keys at coindcx.com -> Settings -> API');
   console.error('  5. Secret: re-copy the secret (shown only once when the key was created)');
 }
 
 async function checkBalance() {
   try {
-    const account = await getAccount();
-    printBalances(account);
+    const balances = await getBalances();
+    printBalances(balances);
   } catch (error) {
     console.error('\nBalance check failed:', error.message);
 
-    if (error.message.includes('Invalid API-key')) {
+    const msg = error.message.toLowerCase();
+    if (msg.includes('invalid') && (msg.includes('key') || msg.includes('api'))) {
       await printInvalidKeyHelp();
-    } else if (error.message.includes('Signature')) {
-      console.error('The API secret is wrong. Re-copy it from Binance API Management.');
-    } else if (error.message.includes('IP')) {
+    } else if (msg.includes('signature') || msg.includes('unauthorized') || msg.includes('401')) {
+      console.error('The API secret may be wrong. Re-copy it from CoinDCX API Management.');
+      await printInvalidKeyHelp();
+    } else if (msg.includes('ip')) {
       const ip = await getPublicIp();
-      console.error(`Your IP (${ip}) is not whitelisted on this API key.`);
+      console.error(`Your IP (${ip}) may not be whitelisted on this API key.`);
     }
   }
 }
 
 function main() {
-  if (!API_KEY || !API_SECRET || API_KEY.includes('your_api_key') || API_SECRET.includes('your_api_secret')) {
-    console.error('Set your BINANCE API_KEY and API_SECRET at the top of this file.');
+  if (
+    !API_KEY ||
+    !API_SECRET ||
+    API_KEY.includes('your_api_key') ||
+    API_SECRET.includes('your_api_secret')
+  ) {
+    console.error('Set your COINDCX API_KEY and API_SECRET at the top of this file.');
     process.exit(1);
   }
 
-  console.log('Binance Balance Bot started.');
-  console.log(`Network: ${USE_TESTNET ? 'TESTNET' : 'MAINNET'} (${API_HOST})`);
+  console.log('CoinDCX Balance Bot started.');
   console.log(`Mode: ${CHECK_INTERVAL_MS <= 0 ? 'single check' : `every ${CHECK_INTERVAL_MS / 1000}s`}`);
 
   checkBalance();
