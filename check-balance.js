@@ -39,29 +39,46 @@ const WALLETS = [
   ["previous-proxy", PM_EXTRA_ADDRESSES],
 ];
 
+function httpsRequest(url, options) {
+  const method = (options && options.method) || "GET";
+  const headers = (options && options.headers) || {};
+  const body = options && options.body;
+  return new Promise((resolve, reject) => {
+    const req = https.request(url, { method: method, headers: headers }, (res) => {
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => {
+        resolve({ status: res.statusCode || 0, text: Buffer.concat(chunks).toString("utf8") });
+      });
+    });
+    req.on("error", reject);
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
 async function getJson(url) {
-  const res = await fetch(url);
-  const text = await res.text();
+  const res = await httpsRequest(url);
   let body;
   try {
-    body = text ? JSON.parse(text) : null;
-  } catch {
-    body = text;
+    body = res.text ? JSON.parse(res.text) : null;
+  } catch (err) {
+    body = res.text;
   }
-  if (!res.ok) {
+  if (res.status < 200 || res.status >= 300) {
     const detail = typeof body === "string" ? body : JSON.stringify(body);
-    throw new Error(res.status + " " + res.statusText + " " + detail);
+    throw new Error(res.status + " " + detail);
   }
   return body;
 }
 
 async function rpc(method, params) {
-  const res = await fetch(RPC, {
+  const res = await httpsRequest(RPC, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: method, params: params }),
   });
-  const json = await res.json();
+  const json = JSON.parse(res.text);
   if (json.error) throw new Error(json.error.message || JSON.stringify(json.error));
   return json.result;
 }
@@ -126,32 +143,20 @@ function clobSignature(timestamp, method, requestPath) {
   return sig.replace(/\+/g, "-").replace(/\//g, "_");
 }
 
-function httpsGet(url, headers) {
-  return new Promise((resolve, reject) => {
-    const req = https.request(url, { method: "GET", headers }, (res) => {
-      const chunks = [];
-      res.on("data", (chunk) => chunks.push(chunk));
-      res.on("end", () => {
-        resolve({ status: res.statusCode || 0, text: Buffer.concat(chunks).toString("utf8") });
-      });
-    });
-    req.on("error", reject);
-    req.end();
-  });
-}
-
 async function clobCollateral(signatureType, address) {
   const timestamp = Math.floor(Date.now() / 1000);
   const requestPath = "/balance-allowance";
   const url = new URL(CLOB + requestPath);
   url.searchParams.set("asset_type", "COLLATERAL");
   url.searchParams.set("signature_type", String(signatureType));
-  const res = await httpsGet(url, {
-    POLY_ADDRESS: address,
-    POLY_SIGNATURE: clobSignature(timestamp, "GET", requestPath),
-    POLY_TIMESTAMP: String(timestamp),
-    POLY_API_KEY: PM_API_KEY,
-    POLY_PASSPHRASE: PM_API_PASSPHRASE,
+  const res = await httpsRequest(url, {
+    headers: {
+      POLY_ADDRESS: address,
+      POLY_SIGNATURE: clobSignature(timestamp, "GET", requestPath),
+      POLY_TIMESTAMP: String(timestamp),
+      POLY_API_KEY: PM_API_KEY,
+      POLY_PASSPHRASE: PM_API_PASSPHRASE,
+    },
   });
   let body;
   try {
